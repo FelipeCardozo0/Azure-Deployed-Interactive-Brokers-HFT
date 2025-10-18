@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trading
+  labels:
+    name: trading
+    app.kubernetes.io/name: trading-system
+    app.kubernetes.io/version: "1.0.0"

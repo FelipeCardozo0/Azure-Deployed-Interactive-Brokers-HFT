@@ -1,0 +1,175 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ib-gateway
+  namespace: trading
+  labels:
+    app: ib-gateway
+    component: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ib-gateway
+  template:
+    metadata:
+      labels:
+        app: ib-gateway
+        component: gateway
+    spec:
+      serviceAccountName: ib-gateway
+      nodeSelector:
+        workload: trading
+      tolerations:
+      - key: trading
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      containers:
+      - name: ib-gateway
+        image: hftacr.azurecr.io/ib-gateway:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 7497
+          name: api
+        - containerPort: 5900
+          name: vnc
+        env:
+        - name: IB_GATEWAY_PORT
+          value: "7497"
+        - name: IB_GATEWAY_HOST
+          value: "0.0.0.0"
+        - name: TWS_USERID
+          valueFrom:
+            secretKeyRef:
+              name: ib-credentials
+              key: username
+        - name: TWS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ib-credentials
+              key: password
+        - name: TWS_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              name: ib-credentials
+              key: account
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 7497
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 7497
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: ib-data
+          mountPath: /app/data
+        - name: ib-logs
+          mountPath: /app/logs
+      volumes:
+      - name: ib-data
+        persistentVolumeClaim:
+          claimName: ib-gateway-data
+      - name: ib-logs
+        persistentVolumeClaim:
+          claimName: ib-gateway-logs
+      - name: secrets-store-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "azure-keyvault-secrets"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ib-gateway
+  namespace: trading
+  labels:
+    app: ib-gateway
+spec:
+  selector:
+    app: ib-gateway
+  ports:
+  - name: api
+    port: 7497
+    targetPort: 7497
+    protocol: TCP
+  - name: vnc
+    port: 5900
+    targetPort: 5900
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ib-gateway-data
+  namespace: trading
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: managed-csi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ib-gateway-logs
+  namespace: trading
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: managed-csi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ib-gateway
+  namespace: trading
+  annotations:
+    azure.workload.identity/client-id: "{{ .Values.identity.clientId }}"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ib-gateway-restart
+  namespace: trading
+spec:
+  schedule: "0 8 * * *"  # Daily at 8 AM UTC
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ib-gateway
+          containers:
+          - name: kubectl
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl rollout restart deployment/ib-gateway -n trading
+              echo "IB Gateway restart scheduled"
+          restartPolicy: OnFailure

@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strategy
+  namespace: trading
+  labels:
+    app: strategy
+    component: trading-strategy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: strategy
+  template:
+    metadata:
+      labels:
+        app: strategy
+        component: trading-strategy
+    spec:
+      serviceAccountName: strategy
+      nodeSelector:
+        workload: trading
+      tolerations:
+      - key: trading
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      containers:
+      - name: strategy
+        image: hftacr.azurecr.io/strategy:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: metrics
+        env:
+        - name: IB_HOST
+          value: "ib-gateway"
+        - name: IB_PORT
+          value: "7497"
+        - name: IB_CLIENT_ID
+          value: "2"
+        - name: IB_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              name: ib-credentials
+              key: account
+        - name: IB_PAPER
+          value: "true"
+        - name: SYMBOLS
+          value: "SPY,QQQ,IWM,GLD,TLT"
+        - name: POSTGRES_DSN
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: postgres-connection-string
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: redis-connection-string
+        - name: KAFKA_BROKERS
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: eventhubs-connection-string
+        - name: APP_INSIGHTS_CONN
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: app-insights-connection-string
+        - name: STRATEGY_SYMBOLS
+          value: "SPY,QQQ,IWM"
+        - name: STRATEGY_SIGNAL_THRESHOLD
+          value: "2.0"
+        - name: STRATEGY_MOMENTUM_THRESHOLD
+          value: "0.001"
+        - name: STRATEGY_VOLATILITY_THRESHOLD
+          value: "0.01"
+        - name: STRATEGY_VOLUME_THRESHOLD
+          value: "1.5"
+        - name: STRATEGY_MIN_CONFIDENCE
+          value: "0.6"
+        - name: STRATEGY_LOOKBACK_PERIOD
+          value: "60"
+        - name: STRATEGY_VOLATILITY_WINDOW
+          value: "20"
+        - name: STRATEGY_MOMENTUM_WINDOW
+          value: "5"
+        - name: STRATEGY_ZSCORE_THRESHOLD
+          value: "2.0"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: secrets-store-inline
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+      volumes:
+      - name: secrets-store-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "azure-keyvault-secrets"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: strategy
+  namespace: trading
+  labels:
+    app: strategy
+spec:
+  selector:
+    app: strategy
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: strategy
+  namespace: trading
+  annotations:
+    azure.workload.identity/client-id: "{{ .Values.identity.clientId }}"

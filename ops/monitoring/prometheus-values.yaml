@@ -1,0 +1,284 @@
+# Prometheus configuration values
+
+# Global configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Prometheus server configuration
+server:
+  persistentVolume:
+    enabled: true
+    size: 50Gi
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+# Alertmanager configuration
+alertmanager:
+  enabled: true
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+# Grafana configuration
+grafana:
+  enabled: true
+  adminPassword: "admin123"
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'trading-dashboards'
+        orgId: 1
+        folder: 'Trading'
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/trading
+  dashboards:
+    trading:
+      trading-overview:
+        gnetId: 1
+        revision: 1
+        datasource: Prometheus
+      trading-metrics:
+        gnetId: 2
+        revision: 1
+        datasource: Prometheus
+      trading-alerts:
+        gnetId: 3
+        revision: 1
+        datasource: Prometheus
+
+# Node exporter configuration
+nodeExporter:
+  enabled: true
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Kube state metrics configuration
+kubeStateMetrics:
+  enabled: true
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Additional scrape configs
+additionalScrapeConfigs:
+  - job_name: 'trading-apps'
+    kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+        - trading
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_service_name]
+      action: keep
+      regex: (md-collector|strategy|risk-oms|api)
+    - source_labels: [__meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: metrics
+    - source_labels: [__address__]
+      action: replace
+      target_label: __address__
+      regex: ([^:]+)(?::\d+)?
+      replacement: $1:8080
+    - source_labels: [__meta_kubernetes_namespace]
+      action: replace
+      target_label: kubernetes_namespace
+    - source_labels: [__meta_kubernetes_service_name]
+      action: replace
+      target_label: kubernetes_name
+    - source_labels: [__meta_kubernetes_pod_name]
+      action: replace
+      target_label: kubernetes_pod_name
+
+# Alert rules
+alertmanagerFiles:
+  alertmanager.yml:
+    global:
+      smtp_smarthost: 'localhost:587'
+      smtp_from: 'alerts@trading.example.com'
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'web.hook'
+    receivers:
+    - name: 'web.hook'
+      webhook_configs:
+      - url: 'http://api.trading.example.com/api/v1/alerts'
+
+# Additional rules
+additionalRules:
+  trading-alerts.yaml: |
+    groups:
+    - name: trading.rules
+      rules:
+      - alert: TradingSystemDown
+        expr: up{job="trading-apps"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Trading system is down"
+          description: "Trading system has been down for more than 1 minute"
+      
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }} errors per second"
+      
+      - alert: DatabaseConnectionFailed
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection failed"
+          description: "Cannot connect to PostgreSQL database"
+      
+      - alert: RedisConnectionFailed
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis connection failed"
+          description: "Cannot connect to Redis cache"
+      
+      - alert: IBGatewayConnectionFailed
+        expr: up{job="ib-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IB Gateway connection failed"
+          description: "Cannot connect to Interactive Brokers Gateway"
+      
+      - alert: HighMemoryUsage
+        expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is {{ $value }}% of limit"
+      
+      - alert: HighCPUUsage
+        expr: (rate(container_cpu_usage_seconds_total[5m]) / container_spec_cpu_quota * container_spec_cpu_period) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is {{ $value }}% of limit"
+      
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space is low"
+          description: "Disk space is {{ $value }}% available"
+      
+      - alert: KillSwitchActive
+        expr: trading_kill_switch_active == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kill switch is active"
+          description: "Trading system kill switch is active"
+      
+      - alert: StaleMarketData
+        expr: time() - trading_last_market_data_timestamp > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stale market data detected"
+          description: "Market data is {{ $value }} seconds old"
+      
+      - alert: HighOrderRejectionRate
+        expr: rate(trading_orders_rejected_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High order rejection rate"
+          description: "Order rejection rate is {{ $value }} rejections per second"
+      
+      - alert: DatabaseSlowQueries
+        expr: rate(postgres_slow_queries_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow database queries detected"
+          description: "Slow query rate is {{ $value }} queries per second"
+      
+      - alert: RedisMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis memory usage is {{ $value }}% of limit"
+      
+      - alert: EventHubBacklog
+        expr: eventhub_partition_backlog > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Event Hub backlog is high"
+          description: "Event Hub partition backlog is {{ $value }} messages"
+      
+      - alert: ApplicationInsightsErrors
+        expr: rate(application_insights_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Application Insights error rate"
+          description: "Application Insights error rate is {{ $value }} errors per second"

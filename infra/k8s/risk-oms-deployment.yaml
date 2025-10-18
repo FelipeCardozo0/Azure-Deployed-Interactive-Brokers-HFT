@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-oms
+  namespace: trading
+  labels:
+    app: risk-oms
+    component: risk-management
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: risk-oms
+  template:
+    metadata:
+      labels:
+        app: risk-oms
+        component: risk-management
+    spec:
+      serviceAccountName: risk-oms
+      nodeSelector:
+        workload: trading
+      tolerations:
+      - key: trading
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      containers:
+      - name: risk-oms
+        image: hftacr.azurecr.io/risk-oms:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: metrics
+        env:
+        - name: IB_HOST
+          value: "ib-gateway"
+        - name: IB_PORT
+          value: "7497"
+        - name: IB_CLIENT_ID
+          value: "3"
+        - name: IB_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              name: ib-credentials
+              key: account
+        - name: IB_PAPER
+          value: "true"
+        - name: SYMBOLS
+          value: "SPY,QQQ,IWM,GLD,TLT"
+        - name: POSTGRES_DSN
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: postgres-connection-string
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: redis-connection-string
+        - name: KAFKA_BROKERS
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: eventhubs-connection-string
+        - name: APP_INSIGHTS_CONN
+          valueFrom:
+            secretKeyRef:
+              name: azure-keyvault-secrets
+              key: app-insights-connection-string
+        - name: RISK_MAX_NOTIONAL
+          value: "1000000.0"
+        - name: RISK_MAX_QTY
+          value: "1000"
+        - name: RISK_PRICE_BAND_BPS
+          value: "50"
+        - name: RISK_ORDERS_PER_SEC
+          value: "10"
+        - name: RISK_MAX_OPEN_ORDERS
+          value: "50"
+        - name: RISK_STALE_DATA_THRESHOLD
+          value: "3"
+        - name: RISK_DRAWDOWN_LIMIT
+          value: "0.05"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: secrets-store-inline
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+      volumes:
+      - name: secrets-store-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "azure-keyvault-secrets"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: risk-oms
+  namespace: trading
+  labels:
+    app: risk-oms
+spec:
+  selector:
+    app: risk-oms
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: risk-oms
+  namespace: trading
+  annotations:
+    azure.workload.identity/client-id: "{{ .Values.identity.clientId }}"
